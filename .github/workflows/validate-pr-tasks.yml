@@ -1,0 +1,66 @@
+name: Validate Pull Request Tasks
+run-name: Validate Tasks - ${{ github.event.pull_request.title }}
+
+concurrency:
+  group: ci-validate-tasks-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions: {}
+
+jobs:
+  validate-pr:
+    name: PR validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get work items from PR
+        uses: im-open/get-work-items-action@v4.2.3
+        with:
+          context: ${{ github.event.pull_request.title }}
+          include-pr: false
+          only-resolved: false
+          fail-on-missing: true
+          fail-on-missing-except-for-labels: ''
+          patterns: |
+            AB#\d+
+      - name: Validate PR tasks are complete
+        if: always()
+        id: validate-pr-tasks
+        uses: im-open/pr-tasks-completed-action@v2
+
+      - name: Annotate Task Completion
+        if: always()
+        id: annotate-task-completion
+        uses: actions/github-script@v9
+        env:
+          TASKS: ${{ steps.validate-pr-tasks.outputs.tasks }}
+          COMPLETED_COUNT: ${{ steps.validate-pr-tasks.outputs.completed-count }}
+          INCOMPLETE_COUNT: ${{ steps.validate-pr-tasks.outputs.incomplete-count }}
+        with:
+          script: |
+            const completed = Number(process.env.COMPLETED_COUNT || 0);
+            const totalTasks = completed + Number(process.env.INCOMPLETE_COUNT || 0);
+            core.setOutput('TOTAL_TASKS', totalTasks);
+            const tasks = JSON.parse(process.env.TASKS || '[]');
+            let summaryOfTasks = `
+            This pipeline requires that all tasks are completed in the pull request description.
+            | Title | Value |
+            | --- | --- |
+            | PR Tasks Completion | ${completed} / ${totalTasks} |
+            | List of Tasks | |
+            | --- | --- |`;
+            tasks.forEach(task => {
+              summaryOfTasks += `
+            | -- ${task.name} | ${task.checked ? '✅' : '❌'} |`;
+            });
+            await core.summary
+              .addRaw(summaryOfTasks)
+              .write();
+      - name: Check for no tasks found
+        if: always() && steps.annotate-task-completion.outputs.TOTAL_TASKS < 1
+        run: |
+          echo "No tasks found for PR"
+          exit 1
